@@ -40,7 +40,7 @@ pub fn game_dir() -> PathBuf {
 
 pub fn game_ready() -> bool {
     let dir = game_dir();
-    dir.join("data/manifest.json").exists() && build_dir(&dir).is_some_and(|b| !cfg!(feature = "jit") || b.join("game.wasm").exists())
+    dir.join("data/manifest.json").exists() && build_dir(&dir).is_some_and(|b| !cfg!(feature = "jit") || crate::code_embedded() || b.join("game.wasm").exists())
 }
 
 pub fn bundled_resources() -> Option<PathBuf> {

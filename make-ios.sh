@@ -10,14 +10,14 @@ MODE=""
 DEVICE=""
 for a in "$@"; do
   case "$a" in
-    *.zip) ZIP="$a" ;;
+    *.zip|*.wasm) ZIP="$a" ;;
     --install|--ipa) MODE="$a" ;;
     *) DEVICE="$a" ;;
   esac
 done
 
 TEAM="${TEAM:-}"
-[ -n "$TEAM" ] || { echo "set TEAM=<your Apple developer team id>"; exit 1; }
+if [ "$MODE" != "--ipa" ] && [ -z "$TEAM" ]; then echo "set TEAM=<your Apple developer team id>"; exit 1; fi
 BUNDLE_ID="${BUNDLE_ID:-ch.cclerc.muguet.ios}"
 ENTITLEMENTS=Muguet.entitlements
 HEAP_GB=8
@@ -28,13 +28,18 @@ fi
 export MUGUET_IOS_HEAP_GB="${MUGUET_IOS_HEAP_GB:-$HEAP_GB}"
 TOOLCHAIN=1.98.1
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"
 
 if [ -n "$ZIP" ]; then
   cargo build --release
   mkdir -p target/ios-game
-  ENTRY="$(unzip -Z1 "$ZIP" | grep -E '(^|/)b/[^/]+/game\.wasm$' | head -1)"
-  [ -n "$ENTRY" ] || { echo "$ZIP has no b/<build>/game.wasm"; exit 1; }
-  unzip -p "$ZIP" "$ENTRY" > target/ios-game/game.wasm
+  case "$ZIP" in
+    *.zip)
+      ENTRY="$(unzip -Z1 "$ZIP" | grep -E '(^|/)b/[^/]+/game\.wasm$' | head -1)"
+      [ -n "$ENTRY" ] || { echo "$ZIP has no b/<build>/game.wasm"; exit 1; }
+      unzip -p "$ZIP" "$ENTRY" > target/ios-game/game.wasm ;;
+    *) cp "$ZIP" target/ios-game/game.wasm ;;
+  esac
   ./target/release/muguet --precompile-ios target/ios-game/game.wasm target/ios-game/game.cwasm
   rm target/ios-game/game.wasm
   export MUGUET_GAME_CODE="$PWD/target/ios-game/game.cwasm"
@@ -47,10 +52,18 @@ IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo "+$TOOLCHAIN" build --release --no-default
 
 (cd ios && xcodegen generate --quiet)
 rm -rf target/ios-xcode/Build/Products
-xcodebuild -quiet -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode -allowProvisioningUpdates build \
-  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" CODE_SIGN_ENTITLEMENTS="$ENTITLEMENTS" DEVELOPMENT_TEAM="$TEAM"
 APP="$PWD/target/ios-xcode/Build/Products/Release-iphoneos/Muguet.app"
+if [ "$MODE" = "--ipa" ]; then
+  xcodebuild -quiet -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
+    -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode build \
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" CODE_SIGNING_ALLOWED=NO
+  rm -f "$APP/embedded.mobileprovision"
+  codesign --force --sign - --entitlements ios/Muguet-sideload.entitlements --generate-entitlement-der "$APP"
+else
+  xcodebuild -quiet -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
+    -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode -allowProvisioningUpdates build \
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" CODE_SIGN_ENTITLEMENTS="$ENTITLEMENTS" DEVELOPMENT_TEAM="$TEAM"
+fi
 codesign --verify "$APP"
 echo "built: $APP ($(du -sh "$APP" | cut -f1))"
 

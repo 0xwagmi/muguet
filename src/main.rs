@@ -106,9 +106,18 @@ fn main() -> Result<()> {
     if argv.get(1).map(String::as_str) == Some("--import") {
         let zip = argv.get(2).context("--import <game.zip>")?;
         let dest = config::game_dir();
-        return import::import(std::path::Path::new(zip), &dest, true, |done, total| println!("progress {done} {total}"));
+        return import::import(std::path::Path::new(zip), &dest, !code_embedded(), |done, total| println!("progress {done} {total}"));
     }
 
+    #[cfg(feature = "jit")]
+    if argv.get(1).map(String::as_str) == Some("--precompile") {
+        let (wasm, out) = (argv.get(2).context("--precompile <wasm> <out>")?, argv.get(3).context("--precompile <wasm> <out>")?);
+        let engine = Engine::new(&engine_config_for(false)).map_err(anyhow::Error::from)?;
+        let m = compile_patched(&engine, std::path::Path::new(wasm))?;
+        std::fs::write(out, m.serialize()?)?;
+        eprintln!("[host] precompiled {wasm} -> {out}");
+        return Ok(());
+    }
     #[cfg(feature = "jit")]
     if argv.get(1).map(String::as_str) == Some("--precompile-ios") {
         let (wasm, out) = (argv.get(2).context("--precompile-ios <wasm> <out>")?, argv.get(3).context("--precompile-ios <wasm> <out>")?);
@@ -202,8 +211,14 @@ pub fn run_engine(rt: &Arc<Runtime>, args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(not(feature = "jit"), not(target_os = "ios")))]
-compile_error!("the macOS build compiles the game at first launch: build it with the default `jit` feature");
+#[cfg(all(not(feature = "jit"), not(target_os = "ios"), not(game_code)))]
+compile_error!("the macOS build needs the default `jit` feature, or MUGUET_GAME_CODE with the precompiled game");
+
+#[cfg(all(not(feature = "jit"), not(target_os = "ios"), game_code))]
+fn load_module(engine: &Engine, _startup: &config::Startup) -> Result<Module> {
+    static GAME_CODE: &[u8] = include_bytes!(env!("MUGUET_GAME_CODE"));
+    unsafe { Module::deserialize(engine, GAME_CODE) }.map_err(anyhow::Error::from).context("embedded game code")
+}
 
 #[cfg(all(not(feature = "jit"), target_os = "ios", game_code))]
 std::arch::global_asm!(
@@ -238,6 +253,11 @@ fn load_module(_engine: &Engine, _startup: &config::Startup) -> Result<Module> {
 
 pub fn has_game_code() -> bool {
     cfg!(any(feature = "jit", game_code))
+}
+
+/// The game's code is part of this executable (no game.wasm needed).
+pub fn code_embedded() -> bool {
+    cfg!(all(not(feature = "jit"), game_code))
 }
 
 #[cfg(all(not(feature = "jit"), target_os = "ios", game_code))]

@@ -14,7 +14,8 @@ func gameReady() -> Bool {
     let fm = FileManager.default
     guard fm.fileExists(atPath: gameURL.appendingPathComponent("data/manifest.json").path),
           let builds = try? fm.contentsOfDirectory(at: gameURL.appendingPathComponent("b"), includingPropertiesForKeys: nil) else { return false }
-    return builds.contains { fm.fileExists(atPath: $0.appendingPathComponent("game.wasm").path) && fm.fileExists(atPath: $0.appendingPathComponent("shaders/index.json").path) }
+    let embedded = Bundle.main.object(forInfoDictionaryKey: "MuguetEmbeddedCode") as? Bool ?? false
+    return builds.contains { (embedded || fm.fileExists(atPath: $0.appendingPathComponent("game.wasm").path)) && fm.fileExists(atPath: $0.appendingPathComponent("shaders/index.json").path) }
 }
 
 final class Importer: ObservableObject {
@@ -25,7 +26,7 @@ final class Importer: ObservableObject {
     func choose() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.zip]
-        panel.message = "Choose the zip with your game data (data/ and b/<build>/ with game.wasm and shaders)"
+        panel.message = "Choose your game data .zip"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         run(url)
     }
@@ -134,14 +135,11 @@ struct LauncherView: View {
 
     @ViewBuilder var importView: some View {
         VStack(spacing: 12) {
-            Text("Game data needed").font(.title3.weight(.semibold))
-            Text("Choose the .zip with your game files: the folder holding data/ and b/<build>/ (game.wasm and shaders). It is unpacked once into ~/Library/Application Support/Muguet.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             if let p = importer.progress {
                 ProgressView(value: p)
                 Text("Importing… \(Int(p * 100)) %").font(.callout).monospacedDigit()
             } else {
-                Button("Choose game .zip…") { importer.choose() }
+                Button("Import game data .zip") { importer.choose() }
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
             }

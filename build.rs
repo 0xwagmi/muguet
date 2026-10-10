@@ -6,11 +6,11 @@ use std::process::Command;
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(game_code)");
     println!("cargo:rerun-if-env-changed=MUGUET_GAME_CODE");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("ios") {
-        return;
-    }
     if std::env::var("MUGUET_GAME_CODE").is_ok_and(|p| std::path::Path::new(&p).is_file()) {
         println!("cargo:rustc-cfg=game_code");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("ios") {
+        return;
     }
     println!("cargo:rustc-link-arg-bins=-Wl,-segprot,__GAME,rx,rx");
 

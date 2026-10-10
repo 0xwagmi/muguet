@@ -171,17 +171,14 @@ struct LauncherView: View {
     }
 
     @ViewBuilder var importView: some View {
-        VStack(spacing: 10) {
-            Text("Game data needed").font(.headline)
-            Text("Choose the .zip with your game files (data/ and b/<build>/ with the shaders). It is unpacked once into this app's Documents; the zip itself can be deleted afterwards.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        VStack(spacing: 12) {
             if let p = importer.progress {
                 ProgressView(value: p)
                 Text("Importing… \(Int(p * 100)) %").font(.callout).monospacedDigit()
             } else {
-                Button("Choose game .zip…") { picking = true }
-                    .buttonStyle(.borderedProminent)
+                Button("Import game data .zip") { picking = true }
                     .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
             }
             if let e = importer.error { Text(e).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center) }
         }

@@ -5,12 +5,31 @@
 set -eu
 cd "$(dirname "$0")"
 APP="$PWD/build/Muguet.app"
+GAME="${1:-}"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"
 
 cargo build --release
+BIN=target/release/muguet
+EMBEDDED=false
+if [ -n "$GAME" ]; then
+  mkdir -p target/mac-game
+  case "$GAME" in
+    *.zip)
+      ENTRY="$(unzip -Z1 "$GAME" | grep -E '(^|/)b/[^/]+/game\.wasm$' | head -1)"
+      [ -n "$ENTRY" ] || { echo "$GAME has no b/<build>/game.wasm"; exit 1; }
+      unzip -p "$GAME" "$ENTRY" > target/mac-game/game.wasm ;;
+    *) cp "$GAME" target/mac-game/game.wasm ;;
+  esac
+  ./target/release/muguet --precompile target/mac-game/game.wasm target/mac-game/game.cwasm
+  rm target/mac-game/game.wasm
+  MUGUET_GAME_CODE="$PWD/target/mac-game/game.cwasm" cargo build --release --no-default-features --target-dir target/embed
+  BIN=target/embed/release/muguet
+  EMBEDDED=true
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/muguet target/release/muguet-server "$APP/Contents/MacOS/"
+cp "$BIN" target/release/muguet-server "$APP/Contents/MacOS/"
 swiftc -O -parse-as-library -target arm64-apple-macos14 launcher/Launcher.swift -o "$APP/Contents/MacOS/Launcher"
 cp assets/*.mp3 "$APP/Contents/Resources/"
 
@@ -37,9 +56,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>NSLocalNetworkUsageDescription</key><string>Multiplayer connects to a game server on your local network.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><false/>
+  <key>MuguetEmbeddedCode</key><EMBEDDED/>
 </dict>
 </plist>
 PLIST
+sed -i '' "s|<EMBEDDED/>|<$EMBEDDED/>|" "$APP/Contents/Info.plist"
 
 codesign --force --deep --sign - "$APP"
 echo "built: $APP ($(du -sh "$APP" | cut -f1))"
