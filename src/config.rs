@@ -35,7 +35,9 @@ fn support_dir() -> PathBuf {
 }
 
 pub fn game_dir() -> PathBuf {
-    support_dir().join("game")
+    let dir = support_dir().join("game");
+    let old = dir.join("gamedat");
+    if !dir.join("data").exists() && old.join("data/manifest.json").exists() { old } else { dir }
 }
 
 pub fn game_ready() -> bool {
