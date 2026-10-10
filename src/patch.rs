@@ -104,6 +104,13 @@ impl Reencode for Patcher {
     }
 }
 
+pub fn is_patched(wasm: &[u8]) -> bool {
+    Parser::new(0).parse_all(wasm).any(|p| match p {
+        Ok(Payload::ImportSection(s)) => s.into_imports().any(|i| i.is_ok_and(|i| i.name == HOOKS[0].0)),
+        _ => false,
+    })
+}
+
 pub fn patch(wasm: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<u8>> {
     let (mut imported_funcs, mut types, mut tls_global) = (0u32, 0u32, None);
     let mut by_name: HashMap<String, u32> = HashMap::new();
