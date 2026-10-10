@@ -720,6 +720,17 @@ pub struct Gpu {
 
 unsafe impl Send for Gpu {}
 
+pub fn max_msaa() -> u32 {
+    let mut d = InstanceDescriptor::new_without_display_handle();
+    d.backends = Backends::METAL;
+    let Ok(adapter) = pollster::block_on(Instance::new(d).request_adapter(&RequestAdapterOptions::default())) else { return 4 };
+    let formats = [TextureFormat::Rgba8Unorm, TextureFormat::Rgba16Float, TextureFormat::Rg11b10Ufloat, TextureFormat::Depth32FloatStencil8];
+    [16, 8, 4, 2]
+        .into_iter()
+        .find(|&n| formats.iter().all(|f| adapter.get_texture_format_features(*f).flags.sample_count_supported(n)))
+        .unwrap_or(1)
+}
+
 impl Gpu {
     fn new(mem: SharedMemory, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>) -> anyhow::Result<Gpu> {
         let (base, _) = mem_base_len(&mem);
