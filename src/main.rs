@@ -285,7 +285,7 @@ fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
     let mp_key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (patch::VERSION, mp::COMMANDS).hash(&mut h);
+        (patch::VERSION, mp::COMMANDS, host::MISSING_TEXT).hash(&mut h);
         h.finish() as u32
     };
     let cache = startup.cache_dir.join(format!("game-{}-{stamp}-{mp_key:08x}.cwasm", meta.len()));
