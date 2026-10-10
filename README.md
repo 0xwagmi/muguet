@@ -12,7 +12,7 @@ On top of that, Muguet adds a small UDP multiplayer (for other people who have t
 ## Game files
 Because I care about me not getting sued, you will need your own copy as a `.zip` : the folder holding `data/` and `b/<build>/` (with `game.wasm` and `shaders/`)
 
-On first launch, Muguet asks for that zip and unpacks it once (into `~/Library/Application Support/Muguet`, or the app's Documents on iOS)
+Muguet itself will then asks for that zip
 
 ## Requirements
 - Apple Silicon Mac, macOS 14 or later
