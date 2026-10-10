@@ -40,6 +40,10 @@ TEAM=<your team id> ./make-ios.sh game.zip --install
 ```
 `--ipa` makes `build/Muguet.ipa` instead. With a free account, add `FREE=1` (+ a `BUNDLE_ID` of your own)
 
+Please install this app with AltStore. This probably won't work well with Sideloadly (or even SideStore, as per [this issue])(https://github.com/SideStore/SideStore/issues/1616)
+
+The app also works with a paid developer account.
+
 ## Multiplayer
 One player hosts from the launcher (or runs `muguet-server` on any machine), the others join with that address. UDP port 47520
 
