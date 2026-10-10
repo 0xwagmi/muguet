@@ -1,5 +1,5 @@
 # Muguet
-A native Mach-O iOS/macOS port of the WebAssembly GTA V build, with multiplayer
+A native Mach-O iOS/macOS port of GTA V, with multiplayer
 
 ## How does this work ?
 this whole port relies on the WebAssembly compilation of the game. in a browser, that `game.wasm` runs inside the JS engine, behind WebGPU, Web Audio, web workers...
