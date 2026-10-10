@@ -233,7 +233,7 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
         }
         "__syscall_fcntl64" => if a(0) <= 2 || fs.fds.contains_key(&a(0)) { 0 } else { -EBADF },
         "__syscall_ioctl" => -ENOTTY,
-        "__syscall_statfs64" => { write_bytes(mem, a(2) as u64, &[0u8; 88]); 0 }
+        "__syscall_statfs64" => { write_bytes(mem, a(2) as u64, &statfs()); 0 }
 
         "__syscall_socket" | "__syscall_connect" | "__syscall_accept4" | "__syscall_sendto"
         | "__syscall_recvfrom" | "__syscall_setsockopt" | "__syscall_getsockopt"
@@ -323,4 +323,16 @@ pub fn httpfs_manifest(mem: &SharedMemory, p: &[Val], results: &mut [Val]) {
         }
     };
     ok_i(results, r);
+}
+
+fn statfs() -> [u8; 88] {
+    let mut b = [0u8; 88];
+    let blocks: u64 = 16 << 20;
+    b[8..12].copy_from_slice(&4096u32.to_le_bytes());
+    b[72..76].copy_from_slice(&4096u32.to_le_bytes());
+    for (off, v) in [(16, blocks), (24, blocks), (32, blocks), (40, 1 << 20), (48, 1 << 20)] {
+        b[off..off + 8].copy_from_slice(&(v as u64).to_le_bytes());
+    }
+    b[64..68].copy_from_slice(&255u32.to_le_bytes());
+    b
 }
