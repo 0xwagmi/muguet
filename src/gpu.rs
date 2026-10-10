@@ -87,6 +87,64 @@ struct Fmt {
     format: TextureFormat,
     views: Vec<TextureFormat>,
     a8: bool,
+    bc: Option<TextureFormat>,
+}
+
+static BC_SOFT: AtomicBool = AtomicBool::new(false);
+
+fn bc_soft_format(f: TextureFormat) -> TextureFormat {
+    use TextureFormat as T;
+    match f {
+        T::Bc1RgbaUnormSrgb | T::Bc2RgbaUnormSrgb | T::Bc3RgbaUnormSrgb | T::Bc7RgbaUnormSrgb => T::Rgba8UnormSrgb,
+        T::Bc4RUnorm => T::R8Unorm,
+        T::Bc5RgUnorm => T::Rg8Unorm,
+        T::Bc6hRgbUfloat => T::Rgba16Float,
+        _ => T::Rgba8Unorm,
+    }
+}
+
+fn bc_decode(bc: TextureFormat, src: &[u8], bpr: u32, rows: u32, layers: u32, w: u32, h: u32) -> (Vec<u8>, u32) {
+    use TextureFormat as T;
+    let px = bc_soft_format(bc).block_copy_size(None).unwrap_or(4) as usize;
+    let block = bc.block_copy_size(None).unwrap_or(16) as usize;
+    let (bw, bh) = (w.div_ceil(4) as usize, h.div_ceil(4) as usize);
+    let (w, h) = (w as usize, h as usize);
+    let mut out = vec![0u8; w * h * px * layers as usize];
+    let mut tmp = [0u8; 4 * 4 * 8];
+    let mut half = [0u16; 4 * 4 * 3];
+    for l in 0..layers as usize {
+        for by in 0..bh {
+            for bx in 0..bw {
+                let o = (l * rows as usize + by) * bpr as usize + bx * block;
+                let Some(b) = src.get(o..o + block) else { continue };
+                match bc {
+                    T::Bc1RgbaUnorm | T::Bc1RgbaUnormSrgb => bcdec_rs::bc1(b, &mut tmp, 16),
+                    T::Bc2RgbaUnorm | T::Bc2RgbaUnormSrgb => bcdec_rs::bc2(b, &mut tmp, 16),
+                    T::Bc3RgbaUnorm | T::Bc3RgbaUnormSrgb => bcdec_rs::bc3(b, &mut tmp, 16),
+                    T::Bc4RUnorm => bcdec_rs::bc4(b, &mut tmp, 4, false),
+                    T::Bc5RgUnorm => bcdec_rs::bc5(b, &mut tmp, 8, false),
+                    T::Bc6hRgbUfloat => {
+                        bcdec_rs::bc6h_half(b, &mut half, 12, false);
+                        for i in 0..16 {
+                            for c in 0..4 {
+                                let v = if c < 3 { half[i * 3 + c] } else { 0x3c00 };
+                                tmp[i * 8 + c * 2..i * 8 + c * 2 + 2].copy_from_slice(&v.to_le_bytes());
+                            }
+                        }
+                    }
+                    _ => bcdec_rs::bc7(b, &mut tmp, 16),
+                }
+                for r in 0..4 {
+                    let y = by * 4 + r;
+                    if y >= h { break; }
+                    let n = (w - bx * 4).min(4) * px;
+                    let d = ((l * h + y) * w + bx * 4) * px;
+                    out[d..d + n].copy_from_slice(&tmp[r * 4 * px..r * 4 * px + n]);
+                }
+            }
+        }
+    }
+    (out, (w * px) as u32)
 }
 fn map_format(f: u32, bind: u32) -> Fmt {
     use TextureFormat as T;
@@ -135,7 +193,10 @@ fn map_format(f: u32, bind: u32) -> Fmt {
             (T::Rgba8Unorm, vec![], false)
         }
     };
-    Fmt { format, views, a8 }
+    if format.is_compressed() && BC_SOFT.load(Ordering::Relaxed) {
+        return Fmt { format: bc_soft_format(format), views: views.into_iter().map(bc_soft_format).collect(), a8, bc: Some(format) };
+    }
+    Fmt { format, views, a8, bc: None }
 }
 
 fn is_depth(f: TextureFormat) -> bool {
@@ -433,6 +494,7 @@ struct Tex {
     format: TextureFormat,
     views: HashMap<(TextureFormat, u32, u32), TextureView>,
     a8: bool,
+    bc: Option<TextureFormat>,
     enc: u64,
     in_bg: bool,
     proxy_depth: Option<Proxy>,
@@ -750,6 +812,10 @@ impl Gpu {
 
             | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let features = want & adapter.features();
+        if !features.contains(Features::TEXTURE_COMPRESSION_BC) {
+            BC_SOFT.store(true, Ordering::Relaxed);
+            log("this GPU can't read BC textures: decoding them on the CPU");
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
             label: Some("muguet"),
             required_features: features,
@@ -1173,7 +1239,7 @@ impl Gpu {
         let tex = match self.scoped(&format!("createTexture id={id} dim={dim} {}x{}x{} mips={mips} dxgi={dxgi} bind=0x{bind:x} samples={samples} -> {:?} usage {:?}", size.width, size.height, size.depth_or_array_layers, m.format, usage), |d| d.create_texture(&desc)) { Some(t) => t, None => return };
         self.set_obj(id, Obj::Tex(Tex {
             tex, desc: TexDesc { w: size.width, h: size.height, d: size.depth_or_array_layers, mips: mips.max(1), samples, dim: dimension },
-            format: m.format, views: HashMap::new(), a8: m.a8, enc: 0, in_bg: false, proxy_depth: None, proxy_stencil: None,
+            format: m.format, views: HashMap::new(), a8: m.a8, bc: m.bc, enc: 0, in_bg: false, proxy_depth: None, proxy_stencil: None,
             proxy_fdepth: None, blit_bg: None, mip_passes: None,
         }));
     }
@@ -1222,9 +1288,17 @@ impl Gpu {
         let t = self.tex_mut(id).unwrap();
         if let Some(p) = t.proxy_fdepth.as_mut() { p.dirty = true; }
         let three = t.desc.dim == TextureDimension::D3;
-        let (tex, a8) = (t.tex.clone(), t.a8);
+        let (tex, a8, bc) = (t.tex.clone(), t.a8, t.bc);
         let mut data = self.bytes(data_addr, size).to_vec();
-        let mut bpr = bpr;
+        let (mut bpr, mut rows, mut w, mut h) = (bpr, rows, w, h);
+        if let Some(bc) = bc {
+            let m = tex.size().mip_level_size(mip, tex.dimension());
+            w = w.min(m.width.saturating_sub(x));
+            h = h.min(m.height.saturating_sub(y));
+            if w == 0 || h == 0 { return; }
+            (data, bpr) = bc_decode(bc, &data, bpr, rows.max(1), d.max(1), w, h);
+            rows = h;
+        }
         if a8 {
             let mut out = vec![0u8; (w * h * 4) as usize];
             for r in 0..h as usize {
