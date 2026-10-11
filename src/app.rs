@@ -65,7 +65,7 @@ impl ApplicationHandler for App {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::METAL;
+        desc.backends = wgpu::Backends::PRIMARY;
         let instance = wgpu::Instance::new(desc);
         let surface = instance.create_surface(window.clone()).expect("create surface");
         *gpu::SURFACE.lock().unwrap() = Some(gpu::SurfaceHandoff { instance, surface, window: window.clone() });

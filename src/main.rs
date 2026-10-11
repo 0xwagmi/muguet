@@ -46,6 +46,7 @@ pub struct HostState {
 
 pub static RT: OnceLock<Arc<Runtime>> = OnceLock::new();
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn footprint_mb() -> u64 {
     extern "C" {
         fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
@@ -59,17 +60,34 @@ pub fn footprint_mb() -> u64 {
     info[2 + 7] >> 20
 }
 
+// Linux/other: resident set size from /proc (macOS used proc_pid_rusage).
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub fn footprint_mb() -> u64 {
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page = if page > 0 { page as u64 } else { 4096 };
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1).and_then(|r| r.parse::<u64>().ok()))
+        .map(|pages| (pages * page) >> 20)
+        .unwrap_or(0)
+}
+
 pub fn set_interactive_qos() {
     set_qos(QOS_CLASS_USER_INTERACTIVE);
 }
 const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
 const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn set_qos(class: u32) {
     extern "C" {
         fn pthread_set_qos_class_self_np(qos: u32, relpri: i32) -> i32;
     }
     unsafe { pthread_set_qos_class_self_np(class, 0) };
 }
+
+// Linux/other: no QoS class to set; the OS scheduler decides.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn set_qos(_class: u32) {}
 
 fn engine_thread_qos(name: &str) -> u32 {
     if name.contains("RenderThread") || name.contains("mixer") || name.contains("Audio") && name.contains("Mix") {
@@ -80,20 +98,13 @@ fn engine_thread_qos(name: &str) -> u32 {
 }
 
 fn raise_open_file_limit() {
-    #[repr(C)]
-    struct Rlimit { cur: u64, max: u64 }
-    extern "C" {
-        fn getrlimit(resource: i32, rlp: *mut Rlimit) -> i32;
-        fn setrlimit(resource: i32, rlp: *const Rlimit) -> i32;
-    }
-    const RLIMIT_NOFILE: i32 = 8;
-    let mut r = Rlimit { cur: 0, max: 0 };
+    let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     unsafe {
-        if getrlimit(RLIMIT_NOFILE, &mut r) == 0 {
-            let want = r.max.min(10240);
-            if want > r.cur {
-                r.cur = want;
-                setrlimit(RLIMIT_NOFILE, &r);
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) == 0 {
+            let want = r.rlim_max.min(10240);
+            if want > r.rlim_cur {
+                r.rlim_cur = want;
+                libc::setrlimit(libc::RLIMIT_NOFILE, &r);
             }
         }
     }

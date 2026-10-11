@@ -855,7 +855,7 @@ unsafe impl Send for Gpu {}
 
 pub fn max_msaa() -> u32 {
     let mut d = InstanceDescriptor::new_without_display_handle();
-    d.backends = Backends::METAL;
+    d.backends = Backends::PRIMARY;
     let Ok(adapter) = pollster::block_on(Instance::new(d).request_adapter(&RequestAdapterOptions::default())) else { return 4 };
     let formats = [TextureFormat::Rgba8Unorm, TextureFormat::Rgba16Float, TextureFormat::Rg11b10Ufloat, TextureFormat::Depth32FloatStencil8];
     [16, 8, 4, 2]
@@ -869,7 +869,7 @@ impl Gpu {
         let (base, _) = mem_base_len(&mem);
         let (instance, surface) = match handoff {
             Some(h) => (h.instance, Some((h.surface, h.window))),
-            None => { let mut d = InstanceDescriptor::new_without_display_handle(); d.backends = Backends::METAL; (Instance::new(d), None) }
+            None => { let mut d = InstanceDescriptor::new_without_display_handle(); d.backends = Backends::PRIMARY; (Instance::new(d), None) }
         };
         let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
             power_preference: PowerPreference::HighPerformance,
