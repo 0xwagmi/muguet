@@ -49,7 +49,6 @@ One player hosts from the launcher (or runs `muguet-server` on any machine), the
 
 ## Limitations
 - iOS needs the increased memory limit entitlement
-- Minimap doesn't show
 - Story missions are single player only
 
 
