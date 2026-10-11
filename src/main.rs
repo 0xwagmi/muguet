@@ -137,6 +137,11 @@ fn main() -> Result<()> {
         std::fs::write(out, patch::patch(&std::fs::read(wasm)?, mp::COMMANDS)?)?;
         return Ok(());
     }
+    #[cfg(feature = "jit")]
+    let launcher_out = {
+        use std::os::fd::AsFd;
+        std::io::stdout().as_fd().try_clone_to_owned().map(std::fs::File::from)
+    };
     let startup = match config::setup() {
         Ok(s) => s,
         Err(e) => {
@@ -145,6 +150,15 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
+    #[cfg(feature = "jit")]
+    if argv.get(1).map(String::as_str) == Some("--compile") {
+        if !code_cache(&startup)?.exists() {
+            use std::io::Write;
+            writeln!(launcher_out?, "compiling")?;
+            load_module(&Engine::new(&engine_config()).map_err(anyhow::Error::from)?, &startup)?;
+        }
+        return Ok(());
+    }
     #[cfg(not(target_os = "ios"))]
     let rt = Some(make_runtime(&startup)?);
     #[cfg(target_os = "ios")]
@@ -277,9 +291,9 @@ impl CustomCodeMemory for SignedCode {
 }
 
 #[cfg(feature = "jit")]
-fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
-    let wasm_path = startup.wasm_path.clone();
-    let meta = std::fs::metadata(&wasm_path).with_context(|| format!("{}", wasm_path.display()))?;
+fn code_cache(startup: &config::Startup) -> Result<std::path::PathBuf> {
+    let wasm_path = &startup.wasm_path;
+    let meta = std::fs::metadata(wasm_path).with_context(|| format!("{}", wasm_path.display()))?;
     let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
 
     let mp_key = {
@@ -288,7 +302,13 @@ fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
         (patch::VERSION, mp::COMMANDS, host::MISSING_TEXT).hash(&mut h);
         h.finish() as u32
     };
-    let cache = startup.cache_dir.join(format!("game-{}-{stamp}-{mp_key:08x}.cwasm", meta.len()));
+    Ok(startup.cache_dir.join(format!("game-{}-{stamp}-{mp_key:08x}.cwasm", meta.len())))
+}
+
+#[cfg(feature = "jit")]
+fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
+    let wasm_path = startup.wasm_path.clone();
+    let cache = code_cache(startup)?;
 
     if let Some(m) = cache.exists().then(|| unsafe { Module::deserialize_file(engine, &cache) }.ok()).flatten() {
         return Ok(m);
