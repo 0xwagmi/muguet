@@ -32,7 +32,17 @@ fn support_dir() -> PathBuf {
     if cfg!(target_os = "ios") {
         return PathBuf::from(home).join("Documents");
     }
-    PathBuf::from(home).join("Library/Application Support/Muguet")
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+            return PathBuf::from(dir).join("muguet");
+        }
+        return PathBuf::from(&home).join(".local/share/muguet");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        PathBuf::from(home).join("Library/Application Support/Muguet")
+    }
 }
 
 pub fn game_dir() -> PathBuf {

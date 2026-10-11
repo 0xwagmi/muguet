@@ -18,13 +18,17 @@ regex = "1.13.1"
 winit = "0.30.13"
 cpal = "0.18.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+wasmparser = { version = "0.258.3", optional = true }
+wasm-encoder = { version = "0.258.3", optional = true, features = ["wasmparser"] }
+bcdec_rs = "0.2.0"
+
+# Apple-only: touch input (iOS) and the GameController framework (macOS/iOS).
+# Scoped to Apple targets so the crate builds on Linux/Windows without them.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "GCController", "GCExtendedGamepad", "GCPhysicalInputProfile", "GCControllerElement", "GCControllerAxisInput", "GCControllerButtonInput", "GCControllerDirectionPad"] }
-wasmparser = { version = "0.258.3", optional = true }
-wasm-encoder = { version = "0.258.3", optional = true, features = ["wasmparser"] }
-bcdec_rs = "0.2.0"
 
 [features]
 default = ["jit"]
