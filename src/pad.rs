@@ -2,11 +2,14 @@
 // Constantin Clerc (c22dev) - 0.1
 
 use crate::input;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_game_controller::{GCController, GCControllerButtonInput, GCExtendedGamepad};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use std::time::Duration;
 
 pub static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static FOCUSED: AtomicBool = AtomicBool::new(true);
@@ -22,25 +25,34 @@ pub fn horn_held() -> bool {
 struct State {
     held: HashSet<&'static str>,
     buttons: u8,
+    #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
     last: Instant,
+    #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
     down_since: Option<Instant>,
 }
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const SWITCH_HOLD: Duration = Duration::from_millis(300);
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const STICK_DEADZONE: f32 = 0.3;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const LOOK_DEADZONE: f32 = 0.12;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const LOOK_SPEED: f64 = 700.0;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn gamepad() -> Option<objc2::rc::Retained<GCExtendedGamepad>> {
     unsafe { GCController::controllers().iter().find_map(|c| c.extendedGamepad()) }
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn down(b: &GCControllerButtonInput) -> bool {
     unsafe { b.isPressed() }
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn poll() -> bool {
     if !FOCUSED.load(Ordering::Relaxed) { release_all(); return false; }
     let Some(gp) = gamepad() else {
@@ -138,4 +150,11 @@ fn release(st: State) {
 pub fn release_all() {
     HORN_PAD.store(false, Ordering::Relaxed);
     if let Some(st) = STATE.lock().unwrap().take() { release(st); }
+}
+
+// Linux/other: no native gamepad backend yet (keyboard/mouse only). `poll` is
+// called once per frame by app.rs; returning false keeps the pad inactive.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub fn poll() -> bool {
+    false
 }

@@ -29,7 +29,14 @@ struct App {
 }
 
 fn backbuffer_size(window: &Window) -> (i32, i32) {
-    let s = if cfg!(target_os = "ios") { window.outer_size() } else { window.inner_size() };
+    let s = if cfg!(target_os = "ios") {
+        window.outer_size()
+    } else if cfg!(not(target_os = "macos")) && window.fullscreen().is_some() {
+        // set_fullscreen is async on X11/Wayland: inner_size is still the windowed size here.
+        window.current_monitor().map(|m| m.size()).unwrap_or_else(|| window.inner_size())
+    } else {
+        window.inner_size()
+    };
     let scale: f64 = std::env::var("MUGUET_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     if let Some((w, h)) = std::env::var("MUGUET_RES").ok().and_then(|r| { let (a, b) = r.split_once('x')?; Some((a.parse().ok()?, b.parse().ok()?)) }) {
         return (w, h);
@@ -65,12 +72,13 @@ impl ApplicationHandler for App {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::METAL;
+        desc.backends = wgpu::Backends::PRIMARY;
         let instance = wgpu::Instance::new(desc);
         let surface = instance.create_surface(window.clone()).expect("create surface");
         *gpu::SURFACE.lock().unwrap() = Some(gpu::SurfaceHandoff { instance, surface, window: window.clone() });
         let (w, h) = backbuffer_size(&window);
         input::set_size(w, h);
+        gpu::set_window_size(window.inner_size().width, window.inner_size().height);
         eprintln!("[app] window {}x{} px, back buffer {w}x{h}", window.inner_size().width, window.inner_size().height);
         #[cfg(target_os = "ios")]
         crate::touch::install(&window);
@@ -95,9 +103,15 @@ impl ApplicationHandler for App {
                 crate::mp::shutdown();
                 std::process::exit(0);
             }
-            WindowEvent::Resized(_) => {
-                let (w, h) = backbuffer_size(&window);
-                input::set_size(w, h);
+            WindowEvent::Resized(s) => {
+                gpu::set_window_size(s.width, s.height);
+                // A back buffer size change makes the engine run grcDevice::DeviceLost, which traps
+                // (out of bounds free in its null D3D layer). Off Apple, once it runs, keep its
+                // resolution fixed and let the presenter scale to the window instead.
+                if cfg!(any(target_os = "macos", target_os = "ios")) || !self.started {
+                    let (w, h) = backbuffer_size(&window);
+                    input::set_size(w, h);
+                }
             }
             WindowEvent::Occluded(hidden) => {
                 gpu::OCCLUDED.store(hidden, std::sync::atomic::Ordering::Relaxed);
@@ -239,7 +253,14 @@ impl App {
     fn cursor(&self, window: &Window, p: PhysicalPosition<f64>) {
         let s = window.inner_size();
         let (w, h) = input::size();
-        input::mouse_pos((p.x * w as f64 / s.width.max(1) as f64).round() as i32, (p.y * h as f64 / s.height.max(1) as f64).round() as i32);
+        let (x0, y0, vw, vh) = if cfg!(any(target_os = "macos", target_os = "ios")) {
+            (0.0, 0.0, s.width as f32, s.height as f32)
+        } else {
+            gpu::letterbox((s.width, s.height), (w as u32, h as u32))
+        };
+        let x = (p.x - x0 as f64) * w as f64 / vw.max(1.0) as f64;
+        let y = (p.y - y0 as f64) * h as f64 / vh.max(1.0) as f64;
+        input::mouse_pos((x.round() as i32).clamp(0, w - 1), (y.round() as i32).clamp(0, h - 1));
     }
     fn lock(&mut self, window: &Window) {
         let ok = window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined)).is_ok();
