@@ -51,5 +51,7 @@ One player hosts from the launcher (or runs `muguet-server` on any machine), the
 - iOS needs the increased memory limit entitlement
 - Story missions are single player only
 
+## Credits
+- [Kagander](https://github.com/Kagander) for fixing the minimap
 
 Contributions are welcome !
