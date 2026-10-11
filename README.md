@@ -55,5 +55,6 @@ One player hosts from the launcher (or runs `muguet-server` on any machine), the
 - [Kagander](https://github.com/Kagander) for fixing the minimap
 - [inj-src](https://github.com/inj-src) for decoding bc textures on all cores
 - [Dbhardwaj99](https://github.com/Dbhardwaj99) for reporting real free disk space
+- [dre4moff](https://github.com/dre4moff) for releasing controller input when the app loses focus
 
 Contributions are welcome !
