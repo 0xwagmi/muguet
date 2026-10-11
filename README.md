@@ -53,5 +53,7 @@ One player hosts from the launcher (or runs `muguet-server` on any machine), the
 
 ## Credits
 - [Kagander](https://github.com/Kagander) for fixing the minimap
+- [inj-src](https://github.com/inj-src) for decoding bc textures on all cores
+- [Dbhardwaj99](https://github.com/Dbhardwaj99) for reporting real free disk space
 
 Contributions are welcome !
