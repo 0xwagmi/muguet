@@ -149,48 +149,69 @@ fn bc_soft_format(f: TextureFormat) -> TextureFormat {
 }
 
 fn bc_decode(bc: TextureFormat, src: &[u8], bpr: u32, rows: u32, layers: u32, w: u32, h: u32) -> (Vec<u8>, u32) {
-    use TextureFormat as T;
+    static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8));
     let px = bc_soft_format(bc).block_copy_size(None).unwrap_or(4) as usize;
-    let block = bc.block_copy_size(None).unwrap_or(16) as usize;
-    let (bw, bh) = (w.div_ceil(4) as usize, h.div_ceil(4) as usize);
     let (w, h) = (w as usize, h as usize);
     let mut out = vec![0u8; w * h * px * layers as usize];
-    let mut tmp = [0u8; 4 * 4 * 8];
-    let mut half = [0u16; 4 * 4 * 3];
-    for l in 0..layers as usize {
-        for by in 0..bh {
-            for bx in 0..bw {
-                let o = (l * rows as usize + by) * bpr as usize + bx * block;
-                let Some(b) = src.get(o..o + block) else { continue };
-                match bc {
-                    T::Bc1RgbaUnorm | T::Bc1RgbaUnormSrgb => bcdec_rs::bc1(b, &mut tmp, 16),
-                    T::Bc2RgbaUnorm | T::Bc2RgbaUnormSrgb => bcdec_rs::bc2(b, &mut tmp, 16),
-                    T::Bc3RgbaUnorm | T::Bc3RgbaUnormSrgb => bcdec_rs::bc3(b, &mut tmp, 16),
-                    T::Bc4RUnorm => bcdec_rs::bc4(b, &mut tmp, 4, false),
-                    T::Bc5RgUnorm => bcdec_rs::bc5(b, &mut tmp, 8, false),
-                    T::Bc6hRgbUfloat => {
-                        bcdec_rs::bc6h_half(b, &mut half, 12, false);
-                        for i in 0..16 {
-                            for c in 0..4 {
-                                let v = if c < 3 { half[i * 3 + c] } else { 0x3c00 };
-                                tmp[i * 8 + c * 2..i * 8 + c * 2 + 2].copy_from_slice(&v.to_le_bytes());
-                            }
-                        }
-                    }
-                    _ => bcdec_rs::bc7(b, &mut tmp, 16),
-                }
-                for r in 0..4 {
-                    let y = by * 4 + r;
-                    if y >= h { break; }
-                    let n = (w - bx * 4).min(4) * px;
-                    let d = ((l * h + y) * w + bx * 4) * px;
-                    out[d..d + n].copy_from_slice(&tmp[r * 4 * px..r * 4 * px + n]);
-                }
+    if out.is_empty() {
+        return (out, (w * px) as u32);
+    }
+    let mut jobs: Vec<(usize, usize, &mut [u8])> = out
+        .chunks_mut(w * h * px)
+        .enumerate()
+        .flat_map(|(l, layer)| layer.chunks_mut(4 * w * px).enumerate().map(move |(by, d)| (l, by, d)))
+        .collect();
+    let threads = if w * h * px * layers as usize >= 1 << 20 { (*CORES).min(jobs.len()) } else { 1 };
+    if threads <= 1 {
+        for (l, by, d) in jobs.iter_mut() { bc_decode_row(bc, src, bpr, rows, *l, *by, w, px, d); }
+    } else {
+        let n = jobs.len();
+        let mut groups: Vec<Vec<(usize, usize, &mut [u8])>> = (0..threads).map(|_| Vec::new()).collect();
+        for (i, job) in jobs.drain(..).enumerate() { groups[i * threads / n].push(job); }
+        std::thread::scope(|sc| {
+            for group in groups {
+                sc.spawn(move || for (l, by, d) in group { bc_decode_row(bc, src, bpr, rows, l, by, w, px, d); });
             }
-        }
+        });
     }
     (out, (w * px) as u32)
 }
+
+#[allow(clippy::too_many_arguments)]
+fn bc_decode_row(bc: TextureFormat, src: &[u8], bpr: u32, rows: u32, l: usize, by: usize, w: usize, px: usize, dst: &mut [u8]) {
+    use TextureFormat as T;
+    let block = bc.block_copy_size(None).unwrap_or(16) as usize;
+    let lines = dst.len() / (w * px);
+    let mut tmp = [0u8; 4 * 4 * 8];
+    let mut half = [0u16; 4 * 4 * 3];
+    for bx in 0..w.div_ceil(4) {
+        let o = (l * rows as usize + by) * bpr as usize + bx * block;
+        let Some(b) = src.get(o..o + block) else { continue };
+        match bc {
+            T::Bc1RgbaUnorm | T::Bc1RgbaUnormSrgb => bcdec_rs::bc1(b, &mut tmp, 16),
+            T::Bc2RgbaUnorm | T::Bc2RgbaUnormSrgb => bcdec_rs::bc2(b, &mut tmp, 16),
+            T::Bc3RgbaUnorm | T::Bc3RgbaUnormSrgb => bcdec_rs::bc3(b, &mut tmp, 16),
+            T::Bc4RUnorm => bcdec_rs::bc4(b, &mut tmp, 4, false),
+            T::Bc5RgUnorm => bcdec_rs::bc5(b, &mut tmp, 8, false),
+            T::Bc6hRgbUfloat => {
+                bcdec_rs::bc6h_half(b, &mut half, 12, false);
+                for i in 0..16 {
+                    for c in 0..4 {
+                        let v = if c < 3 { half[i * 3 + c] } else { 0x3c00 };
+                        tmp[i * 8 + c * 2..i * 8 + c * 2 + 2].copy_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+            _ => bcdec_rs::bc7(b, &mut tmp, 16),
+        }
+        for r in 0..lines.min(4) {
+            let n = (w - bx * 4).min(4) * px;
+            let d = (r * w + bx * 4) * px;
+            dst[d..d + n].copy_from_slice(&tmp[r * 4 * px..r * 4 * px + n]);
+        }
+    }
+}
+
 fn map_format(f: u32, bind: u32) -> Fmt {
     use TextureFormat as T;
     let ds = bind & BIND_DS != 0;
