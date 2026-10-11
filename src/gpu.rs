@@ -765,6 +765,7 @@ pub struct Gpu {
     last_pl: Option<Rc<Pl>>,
     shader_index: HashMap<String, serde_json::Value>,
     shader_dir: PathBuf,
+    map_programs: HashMap<String, Rc<Program>>,
     next_uid: u64,
     bgl_cache: HashMap<(String, u32, u32), (BindGroupLayout, u64)>,
     empty_bgl: Option<(BindGroupLayout, u64)>,
@@ -929,7 +930,7 @@ impl Gpu {
             instance: instance.clone(), pending_clears: HashMap::new(), clears_folded: 0, pipe_jobs, pipe_results, pipe_pending: HashMap::new(), pending_skips: 0, pending_skips0: 0,
             base, mem, ring, device, queue, adapter, surface, surface_format, surface_size: (0, 0),
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
-            s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
+            map_programs: HashMap::new(), s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
             bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: HashMap::new(),
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
@@ -1480,6 +1481,10 @@ impl Gpu {
     }
 
     fn load_program(&mut self, hash: &str, stage: u32) -> Option<Rc<Program>> {
+        self.load_map_program(hash, stage, false)
+    }
+
+    fn load_map_program(&mut self, hash: &str, stage: u32, pause: bool) -> Option<Rc<Program>> {
         let rec = self.shader_index.get(hash).cloned();
         let ok = rec.as_ref().and_then(|r| r.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
         let label = rec.as_ref().map(|r| format!("{}::{}", r["effect"].as_str().unwrap_or("?"), r["program"].as_str().unwrap_or("?"))).unwrap_or_else(|| hash.to_string());
@@ -1490,6 +1495,13 @@ impl Gpu {
         let source = match std::fs::read_to_string(self.shader_dir.join(format!("{hash}.wgsl"))) {
             Ok(s) => s,
             Err(e) => { log_once(&format!("nosrc{hash}"), &format!("shader source {hash}: {e}")); return None; }
+        };
+        // These translated shaders need the same compatibility corrections as
+        // the WebGPU renderer. Parse bindings only after replacing the source.
+        let source = match label.as_str() {
+            "im::PS_BlitDepthToAlpha" if !pause => include_str!("minimap_alpha.wgsl").to_string(),
+            "radar::PS_TexturedUnlitAA" => radar_compat(&source)?,
+            _ => source,
         };
         let (text, pack) = pack_uniforms(&source);
         let module = self.scoped(&format!("shader {label}"), |d| d.create_shader_module(ShaderModuleDescriptor { label: Some(&label), source: ShaderSource::Wgsl(text.as_str().into()) }))?;
@@ -1552,11 +1564,17 @@ impl Gpu {
         Some((map, pairs.join(","), ps_hit))
     }
 
-    fn vertex_module(&self, vs: &Program, flat: &[u32], remap: Option<&(HashMap<u32, u32>, String, bool)>) -> Option<ShaderModule> {
-        if flat.is_empty() && remap.is_none() { return Some(vs.module.clone()); }
+    fn vertex_module(&self, vs: &Program, flat: &[u32], remap: Option<&(HashMap<u32, u32>, String, bool)>, minimap: bool) -> Option<ShaderModule> {
+        if minimap && !vs.text.contains("o0 = vec4<f32>(v0.xyz, o0.w);") {
+            log_once("minimap_vertex", "unexpected minimap vertex shader; skipping mask");
+            return None;
+        }
+        if !minimap && flat.is_empty() && remap.is_none() { return Some(vs.module.clone()); }
         let key = format!("flat {}{}", flat.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","), remap.map(|r| format!("|{}", r.1)).unwrap_or_default());
+        let key = format!("{key}{}", if minimap { "|minimap" } else { "" });
         self.variant(vs, &key, |text| {
-            let t = RE_VS_LOC_MEMBER.replace_all(text, |c: &regex::Captures| {
+            let text = if minimap { text.replace("o0 = vec4<f32>(v0.xyz, o0.w);", "o0 = vec4<f32>(v0.x * 2.0 - 1.0, 1.0 - v0.y * 2.0, v0.z, o0.w);") } else { text.to_string() };
+            let t = RE_VS_LOC_MEMBER.replace_all(&text, |c: &regex::Captures| {
                 let loc: u32 = c[1].parse().unwrap_or(0);
                 if flat.contains(&loc) { format!("@location({}u) @interpolate(flat){}", &c[1], &c[2]) } else { c[0].to_string() }
             }).into_owned();
@@ -2329,7 +2347,7 @@ impl Gpu {
         let bgl1 = match ps { Some(p) if p.info.bindings.iter().any(|b| b.group == 1) => self.bgl_for(p, 1, 1).0, _ => self.empty_bgl() };
         let pl_layout = self.device.create_pipeline_layout(&PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bgl0), Some(&bgl1)], immediate_size: 0 });
         let remap = self.inter_stage_remap(vs, ps.map(|p| p.as_ref()));
-        let vmod = self.vertex_module(vs, ps.map(|p| p.flat.as_slice()).unwrap_or(&[]), remap.as_ref())?;
+        let vmod = self.vertex_module(vs, ps.map(|p| p.flat.as_slice()).unwrap_or(&[]), remap.as_ref(), vs.label == "im::VS_Blit" && ps.map(|p| p.label == "im::PS_BlitDepthToAlpha").unwrap_or(false))?;
 
         let mut by_slot: BTreeMap<u32, (Vec<VertexAttribute>, VertexStepMode)> = BTreeMap::new();
         for e in &layout.els {
@@ -2431,6 +2449,33 @@ impl Gpu {
         let ps_id = self.s.shader[1];
         let Some(vs) = self.shader_program(vs_id) else { self.skip(); return };
         let ps = if ps_id != 0 { match self.shader_program(ps_id) { Some(p) => Some(p), None => { self.skip(); return } } } else { None };
+        // Pause-map fog tiles use world coordinates and the original depth
+        // program. Keep their programs separate from the normalized HUD mask.
+        let pause = vs.label == "im::VS_Blit"
+            && ps.as_ref().map(|p| p.label == "im::PS_BlitDepthToAlpha").unwrap_or(false)
+            && self.state(self.s.blend.0).map(|b| b.words.get(2) == Some(&1)
+                && b.words.get(5) == Some(&4) && b.words.get(9) == Some(&8)).unwrap_or(false);
+        let (vs, ps) = if pause {
+            let Some(hash) = self.shader_index.iter().find(|(_, r)|
+                r.get("effect").and_then(|v| v.as_str()) == Some("im")
+                    && r.get("program").and_then(|v| v.as_str()) == Some("VS_TransformUnlit_IM"))
+                .map(|(h, _)| h.clone()) else { self.skip(); return };
+            let ps_hash = match self.obj(ps_id) { Some(Obj::Shader(s)) => s.hash.clone(), _ => { self.skip(); return } };
+            let mut programs = Vec::new();
+            for (hash, stage) in [(hash, 0), (ps_hash, 1)] {
+                let key = format!("pause:{hash}");
+                let program = match self.map_programs.get(&key) {
+                    Some(p) => p.clone(),
+                    None => {
+                        let Some(p) = self.load_map_program(&hash, stage, true) else { self.skip(); return };
+                        self.map_programs.insert(key, p.clone());
+                        p
+                    }
+                };
+                programs.push(program);
+            }
+            (programs[0].clone(), Some(programs[1].clone()))
+        } else { (vs, ps) };
         let layout = match self.obj(self.s.layout) { Some(Obj::Layout(l)) => l.clone(), _ => { self.skip(); return } };
         self.prepare_depth_proxies(&vs, 0);
         if let Some(p) = &ps { self.prepare_depth_proxies(p, 1); }
@@ -3283,4 +3328,18 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         cur = c.source();
     }
     s
+}
+
+// WebGPU has no geometry stage to provide radar edge distances at location 5.
+// Retain texture/depth/clipping and use full edge coverage instead.
+fn radar_compat(source: &str) -> Option<String> {
+    let text = source.replace(", v5 : vec4<f32>", "")
+        .replace(", @location(5u) v5 : vec4<f32>", "")
+        .replace(", v3, v5);", ", v3);");
+    let edge = Regex::new(r"r0\.y = min\(v5\.y, v5\.x\);\s*r0\.y = clamp\(min\(r0\.yyyy, v5\.xyz\.zzzz\)\.y, 0\.0f, 1\.0f\);").unwrap();
+    let text = edge.replace(&text, "r0.y = 1.0f;").into_owned();
+    if Regex::new(r"\bv5\b").unwrap().is_match(&text) {
+        log_once("radar_compat", "unexpected radar edge input; skipping incompatible shader");
+        None
+    } else { Some(text) }
 }
