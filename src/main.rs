@@ -295,6 +295,10 @@ fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
     }
     eprintln!("[host] compiling {} to native code (one-time)…", wasm_path.display());
     let m = compile_patched(engine, &wasm_path)?;
+    for e in std::fs::read_dir(&startup.cache_dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("game-") && name.ends_with(".cwasm") { let _ = std::fs::remove_file(e.path()); }
+    }
     std::fs::write(&cache, m.serialize()?)?;
     Ok(m)
 }
