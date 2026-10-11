@@ -85,8 +85,22 @@ fn set_qos(class: u32) {
     unsafe { pthread_set_qos_class_self_np(class, 0) };
 }
 
-// Linux/other: no QoS class to set; the OS scheduler decides.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+// Linux has no QoS classes; map them to per-thread nice values instead.
+// Raising priority needs RLIMIT_NICE (limits.conf `rtprio`/`nice`) or CAP_SYS_NICE.
+#[cfg(target_os = "linux")]
+fn set_qos(class: u32) {
+    let nice = if class == QOS_CLASS_USER_INTERACTIVE { -10 } else { -5 };
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, nice) } != 0 {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!("[qos] can't raise thread priority ({}); allow it with `@{} - nice -10` in /etc/security/limits.conf",
+                std::io::Error::last_os_error(), std::env::var("USER").unwrap_or_else(|_| "user".into()));
+        });
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
 fn set_qos(_class: u32) {}
 
 fn engine_thread_qos(name: &str) -> u32 {
