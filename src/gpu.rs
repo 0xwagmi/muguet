@@ -38,6 +38,25 @@ pub static OCCLUDED: AtomicBool = AtomicBool::new(false);
 
 pub static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
+// Window size in physical pixels, packed w << 32 | h. The swapchain follows the window,
+// while the engine keeps rendering at its own back buffer size and gets scaled to fit.
+pub static WINDOW_SIZE: AtomicU64 = AtomicU64::new(0);
+pub fn set_window_size(w: u32, h: u32) {
+    WINDOW_SIZE.store((w as u64) << 32 | h as u64, Ordering::Relaxed);
+}
+fn window_size() -> (u32, u32) {
+    let v = WINDOW_SIZE.load(Ordering::Relaxed);
+    ((v >> 32) as u32, v as u32)
+}
+
+/// Largest rect with the source's aspect ratio centered in the window: (x, y, w, h).
+pub fn letterbox(win: (u32, u32), src: (u32, u32)) -> (f32, f32, f32, f32) {
+    let (ww, wh, sw, sh) = (win.0 as f32, win.1 as f32, src.0.max(1) as f32, src.1.max(1) as f32);
+    let k = (ww / sw).min(wh / sh);
+    let (w, h) = ((sw * k).round(), (sh * k).round());
+    (((ww - w) / 2.0).floor(), ((wh - h) / 2.0).floor(), w, h)
+}
+
 pub static PRESENTS: AtomicU64 = AtomicU64::new(0);
 
 pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
@@ -3209,9 +3228,13 @@ impl Gpu {
         self.materialize_clears(id);
         let visible = !OCCLUDED.load(Ordering::Relaxed);
         if let (Some(t), Some(_), true) = (self.tex(id), self.surface.as_ref(), visible) {
-            let (w, h) = (t.desc.w, t.desc.h);
+            let src = (t.desc.w, t.desc.h);
             let tex = t.tex.clone();
             self.end_pass();
+            // On Apple the CAMetalLayer stretches the back buffer to the window. Vulkan/DX don't,
+            // so elsewhere the swapchain follows the window and the blit scales into it.
+            let win = window_size();
+            let (w, h) = if cfg!(any(target_os = "macos", target_os = "ios")) || win.0 == 0 || win.1 == 0 { src } else { win };
             if self.surface_size != (w, h) {
                 let (surface, window) = self.surface.as_ref().unwrap();
                 let caps = surface.get_capabilities(&self.adapter);
@@ -3233,8 +3256,25 @@ impl Gpu {
             if self.blit.is_none() {
                 let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(
                     "@group(0) @binding(0) var src: texture_2d<f32>;
-                     @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }
-                     @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f { return textureLoad(src, vec2i(pos.xy), 0); }".into()) });
+                     struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+                     @vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+                         var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+                         var o: V; o.pos = vec4f(p[i], 0, 1); o.uv = vec2f(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5); return o;
+                     }
+                     // Bilinear via textureLoad so any back buffer format works without a filtering sampler;
+                     // at 1:1 scale the weights are zero and this is an exact copy.
+                     @fragment fn fs(v: V) -> @location(0) vec4f {
+                         let d = vec2f(textureDimensions(src));
+                         let c = v.uv * d - 0.5;
+                         let f = fract(c);
+                         let b = vec2i(floor(c));
+                         let m = vec2i(d) - 1;
+                         let t00 = textureLoad(src, clamp(b, vec2i(0), m), 0);
+                         let t10 = textureLoad(src, clamp(b + vec2i(1, 0), vec2i(0), m), 0);
+                         let t01 = textureLoad(src, clamp(b + vec2i(0, 1), vec2i(0), m), 0);
+                         let t11 = textureLoad(src, clamp(b + vec2i(1, 1), vec2i(0), m), 0);
+                         return mix(mix(t00, t10, f.x), mix(t01, t11, f.x), f.y);
+                     }".into()) });
                 self.blit = Some(self.simple_pipeline(&module, Some(self.surface_format), None));
             }
             let blit = self.blit.clone().unwrap();
@@ -3260,6 +3300,8 @@ impl Gpu {
                         color_attachments: &[Some(RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store } })],
                         depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
                     });
+                    let (x, y, vw, vh) = letterbox((w, h), src);
+                    p.set_viewport(x, y, vw, vh, 0.0, 1.0);
                     p.set_pipeline(&blit);
                     p.set_bind_group(0, &bg, &[]);
                     p.draw(0..3, 0..1);
